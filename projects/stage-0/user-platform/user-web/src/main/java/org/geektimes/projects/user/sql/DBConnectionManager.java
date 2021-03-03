@@ -1,6 +1,8 @@
 package org.geektimes.projects.user.sql;
 
+import org.geektimes.function.ThrowableFunction;
 import org.geektimes.projects.user.domain.User;
+import org.geektimes.projects.user.repository.DatabaseUserRepository;
 
 import java.beans.BeanInfo;
 import java.beans.Introspector;
@@ -8,20 +10,48 @@ import java.beans.PropertyDescriptor;
 import java.io.PrintWriter;
 import java.lang.reflect.Method;
 import java.sql.*;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.function.Consumer;
+
+import static org.apache.commons.lang.ClassUtils.wrapperToPrimitive;
 
 public class DBConnectionManager {
 
-    private Connection connection;
+    private  Connection connection;
+
+    static {
+        try{
+            Class.forName("org.apache.derby.jdbc.EmbeddedDriver");
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+    }
 
     public void setConnection(Connection connection) {
         this.connection = connection;
     }
 
-    public Connection getConnection() {
-        return this.connection;
+    public  Connection getConnection()  {
+        if (this.connection == null){
+            Connection conn = null;
+            try{
+                Driver driver = DriverManager.getDriver("jdbc:derby:user-platform;create=true");
+                conn = driver.connect("jdbc:derby:user-platform;create=true", new Properties());
+                Statement statement = conn.createStatement();
+                // 删除 users 表
+                System.out.println(statement.execute(DROP_USERS_TABLE_DDL_SQL)); // false
+                // 创建 users 表
+                System.out.println(statement.execute(CREATE_USERS_TABLE_DDL_SQL)); // false
+                System.out.println(statement.executeUpdate(INSERT_USER_DML_SQL));  // 5
+                this.connection = conn;
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+        }
+        return connection;
     }
 
     public void releaseConnection() {
@@ -60,9 +90,8 @@ public class DBConnectionManager {
 //        Driver driver = DriverManager.getDriver("jdbc:derby:/db/user-platform;create=true");
 //        Connection connection = driver.connect("jdbc:derby:/db/user-platform;create=true", new Properties());
 
-        String databaseURL = "jdbc:derby:/db/user-platform;create=true";
+        String databaseURL = "jdbc:derby:user-platform;create=true";
         Connection connection = DriverManager.getConnection(databaseURL);
-
         Statement statement = connection.createStatement();
         // 删除 users 表
         System.out.println(statement.execute(DROP_USERS_TABLE_DDL_SQL)); // false
@@ -139,6 +168,19 @@ public class DBConnectionManager {
         }
 
         connection.close();
+        System.out.println("========================");
+        DBConnectionManager dbConnectionManager = new DBConnectionManager();
+        DatabaseUserRepository databaseUserRepository = new DatabaseUserRepository(dbConnectionManager);
+        User byNameAndPassword = databaseUserRepository.getByNameAndPassword("A","******");
+        System.out.println(byNameAndPassword);
+        byNameAndPassword.setName("AAA");
+        boolean save = databaseUserRepository.save(byNameAndPassword);
+        System.out.println("save result " + save);
+        if (save){
+            Collection<User> all = databaseUserRepository.getAll();
+            all.forEach(System.out::println);
+        }
+       dbConnectionManager.getConnection().close();
     }
 
     private static String mapColumnLabel(String fieldName) {
@@ -149,9 +191,94 @@ public class DBConnectionManager {
      * 数据类型与 ResultSet 方法名映射
      */
     static Map<Class, String> typeMethodMappings = new HashMap<>();
-
+    /**
+     * 数据类型与 ResultSet 方法名映射
+     */
+    public static Map<Class, String> resultSetMethodMappings = new HashMap<>();
+    public static Map<Class, String> preparedStatementMethodMappings = new HashMap<>();
     static {
         typeMethodMappings.put(Long.class, "getLong");
         typeMethodMappings.put(String.class, "getString");
+    }
+    static {
+        resultSetMethodMappings.put(Long.class, "getLong");
+        resultSetMethodMappings.put(String.class, "getString");
+
+        preparedStatementMethodMappings.put(Long.class, "setLong"); // long
+        preparedStatementMethodMappings.put(String.class, "setString"); //
+
+
+    }
+
+    public Integer executeUpdate(String sql, ThrowableFunction<Integer,Integer> function,Consumer<Throwable> exceptionHandler, Object... args){
+        try {
+            Connection connection = getConnection();
+            PreparedStatement preparedStatement = connection.prepareStatement(sql);
+            for (int i = 0; i < args.length; i++) {
+                Object arg = args[i];
+                Class argType = arg.getClass();
+                Class wrapperType = wrapperToPrimitive(argType);
+                if (wrapperType == null) {
+                    wrapperType = argType;
+                }
+                // Boolean -> boolean
+                String methodName = preparedStatementMethodMappings.get(argType);
+                if (methodName.startsWith("set")){
+                    Method method = PreparedStatement.class.getMethod(methodName, int.class,wrapperType);
+                    method.invoke(preparedStatement, i + 1, args[i]);
+                }else{
+                    throw new RuntimeException("方法名异常");
+                }
+            }
+            int result = preparedStatement.executeUpdate();
+            // 返回一个 POJO List -> ResultSet -> POJO List
+            // ResultSet -> T
+            return function.apply(result);
+        } catch (Throwable e) {
+            exceptionHandler.accept(e);
+        }
+        this.releaseConnection();
+        return 0;
+    }
+
+    /**
+     * @param sql
+     * @param function
+     * @param <T>
+     * @return
+     */
+    public  <T> T executeQuery(String sql, ThrowableFunction<ResultSet, T> function,
+                               Consumer<Throwable> exceptionHandler, Object... args) {
+        try {
+            Connection connection = getConnection();
+            PreparedStatement preparedStatement = connection.prepareStatement(sql);
+            for (int i = 0; i < args.length; i++) {
+                Object arg = args[i];
+                Class argType = arg.getClass();
+
+                Class wrapperType = wrapperToPrimitive(argType);
+
+                if (wrapperType == null) {
+                    wrapperType = argType;
+                }
+
+                // Boolean -> boolean
+                String methodName = preparedStatementMethodMappings.get(argType);
+                if (methodName.startsWith("set")){
+                    Method method = PreparedStatement.class.getMethod(methodName, int.class,wrapperType);
+                    method.invoke(preparedStatement, i + 1, args[i]);
+                }else{
+                    throw new RuntimeException("方法名异常");
+                }
+            }
+            ResultSet resultSet = preparedStatement.executeQuery();
+            // 返回一个 POJO List -> ResultSet -> POJO List
+            // ResultSet -> T
+            return function.apply(resultSet);
+        } catch (Throwable e) {
+            exceptionHandler.accept(e);
+        }
+        this.releaseConnection();
+        return null;
     }
 }
