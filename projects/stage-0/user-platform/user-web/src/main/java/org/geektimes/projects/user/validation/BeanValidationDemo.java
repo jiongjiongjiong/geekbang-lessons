@@ -17,10 +17,11 @@ public class BeanValidationDemo {
 
         User user = new User();
         user.setPassword("***");
+        user.setPhoneNumber("123");
 
         // 校验结果
         Set<ConstraintViolation<User>> violations = validator.validate(user);
 
-        violations.forEach(c -> System.out.println(c.getMessage()));
+        violations.forEach(c -> System.out.println("校验结果： " + c.getMessage()));
     }
 }

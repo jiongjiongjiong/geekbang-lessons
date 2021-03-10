@@ -9,11 +9,16 @@ import org.geektimes.web.mvc.controller.PageController;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.validation.ConstraintViolation;
+import javax.validation.Validation;
+import javax.validation.Validator;
+import javax.validation.ValidatorFactory;
 import javax.ws.rs.GET;
 import javax.ws.rs.HttpMethod;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import java.sql.SQLException;
+import java.util.Set;
 
 /**
  * 输出 “Hello,World” Controller
@@ -38,6 +43,17 @@ public class RegisterController implements PageController {
             user.setEmail(request.getParameter("email"));
             user.setPassword(request.getParameter("password"));
             user.setPhoneNumber(request.getParameter("phone"));
+            ValidatorFactory factory = Validation.buildDefaultValidatorFactory();
+            // cache the factory somewhere
+            Validator validator = factory.getValidator();
+            Set<ConstraintViolation<User>> violations = validator.validate(user);
+            if (!violations.isEmpty()){
+                StringBuilder errMsg = new StringBuilder();
+                for (ConstraintViolation<User> msg: violations) {
+                    errMsg.append(msg.getMessage());
+                }
+                return errMsg.toString();
+            }
             boolean register = userService.register(user);
             if (register){
                 User user1 = userService.queryUserByNameAndPassword(request.getParameter("name"), request.getParameter("password"));
